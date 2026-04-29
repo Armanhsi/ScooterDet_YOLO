@@ -39,3 +39,10 @@ Coming soon
 - [5-1] YOLOv7: Wang, Chien-Yao, Alexey Bochkovskiy, and Hong-Yuan Mark Liao. "YOLOv7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors." In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 7464-7475. 2023.
 - [5-2] YOLOv7 Implementation: https://github.com/WongKinYiu/yolov7
 - [6-1] YOLOv8 Implementation: https://github.com/ultralytics/ultralytics
+
+## Salem Additions:
+- YOLO11n chosen: fastest/smallest YOLO11, ~20-30 FPS on Orin Nano GPU, well within real-time threshold
+- Priority queue holds timestamped items from both sensors, pipeline always drains to the newest pair before inferring, minimizes latency while preserving ordering
+- Fusion: weighted average, RS-preferred below 3m, LiDAR-preferred above 3m; degrades gracefully if one sensor is unavailable
+- Dummy modes on both sensors let you develop/test the full pipeline on any machine without the hardware present
+- Log files stamped with datetime: both .csv (tabular) and .jsonl (full fidelity) per run

@@ -1,0 +1,6 @@
+frame_id,image_name,class_id,class_name,confidence,x1,y1,x2,y2,bbox_center_x,bbox_center_y,inference_ms
+0,bus.jpg,5,bus,0.9385,8,229,794,727,401,478,645.98
+0,bus.jpg,0,person,0.8905,670,394,809,879,739,636,645.98
+0,bus.jpg,0,person,0.8790,47,400,239,903,143,651,645.98
+0,bus.jpg,0,person,0.8532,223,408,344,860,283,634,645.98
+0,bus.jpg,0,person,0.6864,0,554,68,871,34,712,645.98

@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements_jetson.txt
+#
+# Install order matters on Jetson. Read notes below before running pip install.
+#
+# QUICK INSTALL:
+#   pip install -r requirements_jetson.txt
+#
+# ─── JETSON-SPECIFIC NOTES ───────────────────────────────────────────────────
+#
+# 1. PyTorch / TorchVision
+#    DO NOT install from PyPI on Jetson - use NVIDIA's prebuilt wheels:
+#    https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
+#    JetPack 6.x (Orin Nano) -> PyTorch 2.3 + JetPack 6
+#    Example (adjust URL for your JetPack version):
+#      wget https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0+nv24.5-cp310-cp310-linux_aarch64.whl
+#      pip install torch-2.3.0+nv24.5-cp310-cp310-linux_aarch64.whl
+#
+# 2. pyrealsense2
+#    Build from source on Jetson (librealsense does not publish Jetson wheels):
+#    https://github.com/IntelRealSense/librealsense/blob/master/doc/installation_jetson.md
+#    After building: pip install pyrealsense2 (wheel built by cmake)
+#
+# 3. OpenCV
+#    JetPack ships with a CUDA-enabled OpenCV. Do NOT reinstall via pip or you
+#    lose CUDA acceleration. Verify with:
+#      python -c "import cv2; print(cv2.getBuildInformation())" | grep CUDA
+#
+# 4. ultralytics (YOLO11)
+#    Standard pip install works. Model is auto-downloaded on first run.
+#    For TensorRT export on Jetson:
+#      yolo export model=yolo11n.pt format=engine device=0
+#    Then use --weights yolo11n.engine in fusion_pipeline.py
+#
+# 5. rplidar-robotics
+#    Standard pip install. The S3 uses baudrate=1000000.
+#    Verify serial port with: ls /dev/ttyUSB* after plugging in the S3.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Object detection
+ultralytics>=8.3.0
+
+# LiDAR SDK
+rplidar-robotics>=0.9.2
+
+# Numerical / image processing
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Note: torch, torchvision, pyrealsense2 must be installed separately on Jetson
+# (see notes above). On a standard x86 dev machine you can use:
+#   pip install torch torchvision pyrealsense2
