@@ -1,7 +1,8 @@
-# Live fusion pipeline: D435i RGB+depth + RPLidar S3 + YOLO11n.
+# Live fusion pipeline: D435i RGB+depth + RPLidar S3 + YOLO11n + IMU/vibration.
 # Priority queue syncs sensor frames by timestamp. Fused distance per detection
 # is weighted RS/LiDAR (RS preferred <3m, LiDAR preferred >=3m).
-# Outputs annotated display window and CSV/JSONL logs.
+# IMU data feeds vibration_detector for pothole detection and surface classification.
+# Outputs annotated display, detection CSV/JSONL, and a Unity-compatible IMU CSV.
 # Usage: python fusion_pipeline.py [--weights yolo11n.pt] [--conf 0.3] [--lidar-port /dev/ttyUSB0]
 
 import argparse
@@ -21,6 +22,8 @@ from ultralytics import YOLO
 
 from realsense_stream import RealSenseStream, sample_depth_at_bbox, REALSENSE_MAX_RELIABLE_DEPTH_M
 from lidar_stream import LidarStream, get_lidar_distance_in_fov
+from imu_stream import IMUStream
+from vibration_detector import VibrationDetector, event_to_dict, UNITY_CSV_COLUMNS
 
 # Constants
 CAMERA_HFOV_DEG = 87.0             # D435i horizontal FOV (degrees)
@@ -32,12 +35,22 @@ LIDAR_FOV_HALF_DEG = 12.0          # half-angle (degrees) of LiDAR acceptance co
 DISPLAY_SCALE = 0.8                # scale factor for the display window
 
 # Box/label colors per distance source (BGR)
-COLOR_BOX   = (0, 220, 0)
-COLOR_TEXT  = (255, 255, 255)
-COLOR_WARN  = (0, 60, 200)
-COLOR_LIDAR = (0, 180, 255)
-COLOR_RS    = (255, 140, 0)
-COLOR_FUSED = (180, 0, 255)
+COLOR_BOX        = (0, 220, 0)
+COLOR_TEXT       = (255, 255, 255)
+COLOR_WARN       = (0, 60, 200)
+COLOR_LIDAR      = (0, 180, 255)
+COLOR_RS         = (255, 140, 0)
+COLOR_FUSED      = (180, 0, 255)
+COLOR_POTHOLE    = (0, 0, 255)    # red alert for pothole events
+COLOR_SURFACE    = (255, 200, 0)  # cyan-ish for surface class overlay
+
+# Surface class display colors (BGR)
+SURFACE_COLORS = {
+    "smooth":      (0, 200, 0),
+    "rough":       (0, 140, 255),
+    "cobblestone": (0, 0, 220),
+    "unknown":     (120, 120, 120),
+}
 
 
 # Priority queue item
@@ -140,34 +153,44 @@ def draw_hud(frame: np.ndarray, fps: float, frame_id: int,
 
 # Logger
 class DetectionLogger:
-    # Writes each detection to a timestamped CSV and JSONL file in log_dir.
+    # Writes detections to CSV+JSONL and vibration events to a separate Unity-compatible CSV.
 
     def __init__(self, log_dir: Path):
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        csv_path   = log_dir / f"detections_{ts}.csv"
-        jsonl_path = log_dir / f"detections_{ts}.jsonl"
+        csv_path    = log_dir / f"detections_{ts}.csv"
+        jsonl_path  = log_dir / f"detections_{ts}.jsonl"
+        unity_path  = log_dir / f"imu_unity_{ts}.csv"
 
-        self._csv_file   = open(csv_path,   "w", newline="")
-        self._jsonl_file = open(jsonl_path, "w")
+        self._csv_file    = open(csv_path,   "w", newline="")
+        self._jsonl_file  = open(jsonl_path, "w")
+        self._unity_file  = open(unity_path, "w", newline="")
 
-        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer   = csv.writer(self._csv_file)
+        self._unity_writer = csv.writer(self._unity_file)
+
         self._csv_writer.writerow([
             "wall_time", "frame_id", "class_id", "class_name",
             "confidence", "x1", "y1", "x2", "y2",
             "bbox_cx", "bbox_cy",
             "rs_depth_m", "lidar_dist_m", "fused_dist_m", "source",
-            "camera_bearing_deg"
+            "camera_bearing_deg",
+            "surface_class", "accel_mag", "gyro_mag"
         ])
 
-        print(f"[Logger] CSV   -> {csv_path}")
-        print(f"[Logger] JSONL -> {jsonl_path}")
+        # Unity CSV header: flat columns, easy to parse in C#
+        self._unity_writer.writerow(UNITY_CSV_COLUMNS)
+
+        print(f"[Logger] Detections CSV  -> {csv_path}")
+        print(f"[Logger] Detections JSONL-> {jsonl_path}")
+        print(f"[Logger] Unity IMU CSV   -> {unity_path}")
 
     def log(self, frame_id: int, class_id: int, class_name: str, conf: float,
             x1: int, y1: int, x2: int, y2: int,
             rs_depth: float, lidar_dist: float, fused_dist: float,
-            source: str, bearing_deg: float):
+            source: str, bearing_deg: float,
+            surface_class: str = "unknown", accel_mag: float = 0.0, gyro_mag: float = 0.0):
         wall_time = datetime.now().isoformat(timespec="milliseconds")
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
@@ -176,7 +199,8 @@ class DetectionLogger:
             wall_time, frame_id, class_id, class_name,
             f"{conf:.4f}", x1, y1, x2, y2, cx, cy,
             f"{rs_depth:.4f}", f"{lidar_dist:.4f}", f"{fused_dist:.4f}",
-            source, f"{bearing_deg:.2f}"
+            source, f"{bearing_deg:.2f}",
+            surface_class, f"{accel_mag:.4f}", f"{gyro_mag:.4f}"
         ])
 
         record = {
@@ -192,16 +216,25 @@ class DetectionLogger:
             "fused_dist_m":   round(fused_dist, 4),
             "source":         source,
             "bearing_deg":    round(bearing_deg, 2),
+            "surface_class":  surface_class,
+            "accel_mag":      round(accel_mag, 4),
+            "gyro_mag":       round(gyro_mag, 4),
         }
         self._jsonl_file.write(json.dumps(record) + "\n")
+
+    def log_vibration_event(self, event_dict: dict):
+        # Writes one vibration event row to the Unity-compatible IMU CSV.
+        self._unity_writer.writerow([event_dict.get(col, "") for col in UNITY_CSV_COLUMNS])
 
     def flush(self):
         self._csv_file.flush()
         self._jsonl_file.flush()
+        self._unity_file.flush()
 
     def close(self):
         self._csv_file.close()
         self._jsonl_file.close()
+        self._unity_file.close()
 
 
 # Fusion pipeline
@@ -221,12 +254,16 @@ class FusionPipeline:
 
         self.rs_stream    = RealSenseStream(maxsize=4)
         self.lidar_stream = LidarStream(port=args.lidar_port, maxsize=4)
+        self.imu_stream   = IMUStream(maxsize=400)
 
         if args.realsense_dummy:
-            self.rs_stream._capture_loop = self.rs_stream._dummy_loop
+            self.rs_stream._capture_loop  = self.rs_stream._dummy_loop
+            self.imu_stream._capture_loop = self.imu_stream._dummy_loop
 
         if args.lidar_dummy or not self._lidar_hw_available():
             self.lidar_stream._capture_loop = self.lidar_stream._dummy_loop
+
+        self.vibration = VibrationDetector()
 
         self.pq: list = []          # heapq of PQItem
         self.pq_lock  = threading.Lock()
@@ -234,10 +271,12 @@ class FusionPipeline:
         log_dir = Path(args.log_dir)
         self.logger = DetectionLogger(log_dir)
 
-        self._frame_id   = 0
-        self._fps        = 0.0
-        self._t_last_fps = time.perf_counter()
-        self._fps_count  = 0
+        self._frame_id    = 0
+        self._fps         = 0.0
+        self._t_last_fps  = time.perf_counter()
+        self._fps_count   = 0
+        self._last_imu    = None   # most recent IMU sample
+        self._pothole_flash_frames = 0  # frames remaining for pothole overlay flash
 
     @staticmethod
     def _lidar_hw_available() -> bool:
@@ -294,6 +333,7 @@ class FusionPipeline:
 
         self.rs_stream.start()
         self.lidar_stream.start()
+        self.imu_stream.start()
 
         rs_feeder_t    = threading.Thread(target=self._rs_feeder,    daemon=True)
         lidar_feeder_t = threading.Thread(target=self._lidar_feeder, daemon=True)
@@ -319,15 +359,37 @@ class FusionPipeline:
                     dt = abs(rs_frame["timestamp_ms"] - lidar_scan["timestamp_ms"])
                     sync_ok = dt < SYNC_WINDOW_MS
 
+                # Drain all queued IMU samples into the vibration detector
+                imu_sample = self.imu_stream.get_sample(timeout=0.0)
+                detected_class_names = []
+                while imu_sample is not None:
+                    self._last_imu = imu_sample
+                    self.vibration.update(imu_sample, detected_class_names)
+                    imu_sample = self.imu_stream.get_sample(timeout=0.0)
+
+                # Retrieve any new vibration events and log them
+                vib_events = self.vibration.get_events()
+                for vib_event in vib_events:
+                    ed = event_to_dict(vib_event)
+                    self.logger.log_vibration_event(ed)
+                    if vib_event.event_type == "pothole":
+                        self._pothole_flash_frames = 15  # flash for 15 frames (~0.5s)
+
+                surface_class = self.vibration.current_surface
+                accel_mag = self._last_imu["accel_mag"] if self._last_imu else 0.0
+                gyro_mag  = self._last_imu["gyro_mag"]  if self._last_imu else 0.0
+
                 results      = self.model(color_bgr, conf=self.args.conf, verbose=False)
                 annotated    = color_bgr.copy()
                 n_detections = len(results[0].boxes)
 
+                detected_class_names = []
                 for box in results[0].boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                     conf     = float(box.conf[0])
                     cls_id   = int(box.cls[0])
                     cls_name = self.class_names[cls_id] if cls_id < len(self.class_names) else str(cls_id)
+                    detected_class_names.append(cls_name)
 
                     # Sample RS depth at bbox center and convert bearing to LiDAR angle convention
                     rs_depth     = sample_depth_at_bbox(depth_map, x1, y1, x2, y2)
@@ -354,7 +416,9 @@ class FusionPipeline:
                         x1=x1, y1=y1, x2=x2, y2=y2,
                         rs_depth=rs_depth, lidar_dist=lidar_dist,
                         fused_dist=fused_dist, source=source_label,
-                        bearing_deg=bearing_deg
+                        bearing_deg=bearing_deg,
+                        surface_class=surface_class,
+                        accel_mag=accel_mag, gyro_mag=gyro_mag
                     )
 
                 # Update FPS counter and flush logs once per second
@@ -368,6 +432,29 @@ class FusionPipeline:
 
                 n_rs, n_lidar = self._pq_sizes()
                 draw_hud(annotated, self._fps, self._frame_id, n_rs, n_lidar, n_detections)
+
+                # IMU / surface overlay (bottom-left corner)
+                surf_color = SURFACE_COLORS.get(surface_class, (120, 120, 120))
+                imu_lines = [
+                    f"Surface: {surface_class}",
+                    f"Accel: {accel_mag:.2f} m/s2",
+                    f"Gyro:  {gyro_mag:.3f} rad/s",
+                ]
+                y_imu = frame_h - 10 - (len(imu_lines) - 1) * 22
+                for line in imu_lines:
+                    cv2.putText(annotated, line, (8, y_imu),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 3, cv2.LINE_AA)
+                    cv2.putText(annotated, line, (8, y_imu),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, surf_color, 1, cv2.LINE_AA)
+                    y_imu += 22
+
+                # Pothole flash alert
+                if self._pothole_flash_frames > 0:
+                    cv2.rectangle(annotated, (0, 0), (frame_w, frame_h), COLOR_POTHOLE, 6)
+                    cv2.putText(annotated, "POTHOLE DETECTED",
+                                (frame_w // 2 - 160, frame_h // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, COLOR_POTHOLE, 3, cv2.LINE_AA)
+                    self._pothole_flash_frames -= 1
 
                 # Show sync status on frame
                 sync_text  = "SYNC OK" if sync_ok else "NO SYNC"
@@ -391,6 +478,7 @@ class FusionPipeline:
             self._stop.set()
             self.rs_stream.stop()
             self.lidar_stream.stop()
+            self.imu_stream.stop()
             self.logger.close()
             if not self.args.no_display:
                 cv2.destroyAllWindows()
@@ -416,6 +504,8 @@ def parse_args():
                         help="Use dummy RealSense data (no hardware)")
     parser.add_argument("--no-display",       action="store_true",
                         help="Disable OpenCV display window (headless mode)")
+    parser.add_argument("--imu-dummy",         action="store_true",
+                        help="Use dummy IMU data (no hardware, implies --realsense-dummy)")
     return parser.parse_args()
 
 

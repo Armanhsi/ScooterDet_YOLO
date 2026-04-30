@@ -46,3 +46,31 @@ Coming soon
 - Fusion: weighted average, RS-preferred below 3m, LiDAR-preferred above 3m; degrades gracefully if one sensor is unavailable
 - Dummy modes on both sensors let you develop/test the full pipeline on any machine without the hardware present
 - Log files stamped with datetime: both .csv (tabular) and .jsonl (full fidelity) per run
+- Could implement a rigid body shake after pothole detection to simulate a real-world scenario.
+
+## SSH from laptop (downtown run)
+
+Connect both the Jetson and your laptop to your mobile hotspot. Find the Jetson's IP on the hotspot admin page or by running `hostname -I` on the Jetson directly.
+
+**1. SSH into the Jetson from your laptop (Windows terminal or PowerShell):**
+```powershell
+ssh username@<jetson-ip>
+```
+
+**2. Start the pipeline (headless, no display needed):**
+```bash
+cd ScooterDet_YOLO
+python fusion_pipeline.py --lidar-port /dev/ttyUSB0 --no-display --log-dir logs/run1
+```
+
+**3. Stop recording when done (Ctrl+C in the SSH terminal).**
+
+**4. Copy logs back to your Windows machine:**
+```powershell
+scp username@<jetson-ip>:~/ScooterDet_YOLO/logs/run1/* C:\Users\TheFl\CascadeProjects\windsurf-project\ScooterDet_YOLO\logs\
+```
+
+The three log files written per session are:
+- `detections_*.csv` and `detections_*.jsonl` — full object detection + IMU per frame
+- `imu_unity_*.csv` — Unity-ready pothole and surface change events only
+    - To be used in Unity for pothole and surface change events in order to read the file and map the values to game physics.
