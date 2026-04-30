@@ -407,6 +407,12 @@ class FusionPipeline:
 
                     fused_dist, source_label = fuse_distances(rs_depth, lidar_dist)
 
+                    dist_str = f"{fused_dist:.2f}m" if fused_dist > 0 else "no dist"
+                    print(f"[frame {self._frame_id:05d}] {cls_name:15s} "
+                          f"conf={conf:.2f}  RS={rs_depth:.2f}m  "
+                          f"LiDAR={lidar_dist:.2f}m  fused={dist_str} [{source_label}]  "
+                          f"bearing={bearing_deg:+.1f}deg")
+
                     draw_detection(annotated, x1, y1, x2, y2,
                                    cls_name, conf, fused_dist, source_label)
 
