@@ -406,7 +406,7 @@ class FusionPipeline:
                         )
 
                     fused_dist, source_label = fuse_distances(rs_depth, lidar_dist)
-
+                    # Command for Terminal: python fusion_pipeline.py --lidar-port /dev/ttyUSB0 --no-display --log-dir logs/test1 
                     dist_str = f"{fused_dist:.2f}m" if fused_dist > 0 else "no dist"
                     print(f"[frame {self._frame_id:05d}] {cls_name:15s} "
                           f"conf={conf:.2f}  RS={rs_depth:.2f}m  "
